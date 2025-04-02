@@ -10,7 +10,7 @@ COPY ./server ./
 RUN if [ "$SERVICE" = "server" ]; then \
         echo "Building server..." && \
         if [ -f "package.json" ]; then \
-            npm ci --production; \
+            npm install --production; \
         fi \
     fi
 ENV NODE_ENV=production
