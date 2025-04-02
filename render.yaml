@@ -5,8 +5,9 @@ services:
     name: influencerhub-api
     runtime: docker
     repo: https://github.com/phillywraps/InfluencerHUB
-    rootDir: server
+    rootDir: .
     dockerfilePath: Dockerfile
+    buildCommand: docker build --build-arg SERVICE=server -t influencerhub-api .
     region: ohio
     plan: standard
     branch: main
@@ -53,8 +54,9 @@ services:
     name: influencerhub
     runtime: docker
     repo: https://github.com/phillywraps/InfluencerHUB
-    rootDir: client
+    rootDir: .
     dockerfilePath: Dockerfile
+    buildCommand: docker build --build-arg SERVICE=client -t influencerhub .
     region: ohio
     plan: standard
     branch: main
