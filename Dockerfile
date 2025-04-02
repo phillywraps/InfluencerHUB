@@ -1,37 +1,24 @@
-# This is a wrapper Dockerfile for Render.com deployment
-# It will detect the service to build based on the environment variable
+# This is a simplified, reliable Dockerfile for Render.com deployment
+FROM node:16-alpine
 
-ARG SERVICE=server
-
-# Build the server service by default
-FROM node:16-alpine AS server-builder
+# Set working directory
 WORKDIR /app
-COPY ./server ./
-RUN if [ "$SERVICE" = "server" ]; then \
-        echo "Building server..." && \
-        if [ -f "package.json" ]; then \
-            npm install --production; \
-        fi \
-    fi
+
+# Install build dependencies
+RUN apk --no-cache add python3 make g++
+
+# Copy the entire application to ensure all files are available
+COPY . .
+
+# Install server dependencies
+WORKDIR /app/server
+RUN npm install
+
+# Set environment variables for server
 ENV NODE_ENV=production
 ENV PORT=5000
 EXPOSE 5000
 ENV RENDER_HEALTHCHECK_PATH=/api/health
+
+# Command to run the server
 CMD ["node", "server.js"]
-
-# Or build the client service
-FROM node:16-alpine AS client-builder
-WORKDIR /app
-COPY ./client ./
-RUN if [ "$SERVICE" = "client" ]; then \
-        echo "Building client..." && \
-        if [ -f "package.json" ]; then \
-            npm ci && \
-            npm run build; \
-        fi \
-    fi
-
-# Final stage - select the appropriate service
-FROM server-builder AS server
-FROM client-builder AS client
-FROM ${SERVICE}

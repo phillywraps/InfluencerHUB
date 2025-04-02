@@ -6,8 +6,8 @@ services:
     runtime: docker
     repo: https://github.com/phillywraps/InfluencerHUB
     rootDir: .
-    dockerfilePath: Dockerfile
-    buildCommand: docker build --build-arg SERVICE=server -t influencerhub-api .
+    dockerfilePath: render.Dockerfile
+    buildCommand: docker build -f render.Dockerfile -t influencerhub-api .
     region: ohio
     plan: standard
     branch: main
@@ -49,23 +49,23 @@ services:
         databaseName: influencerhub-redis
         plan: free
 
-  # Frontend web application
-  - type: web
-    name: influencerhub
-    runtime: docker
-    repo: https://github.com/phillywraps/InfluencerHUB
-    rootDir: .
-    dockerfilePath: Dockerfile
-    buildCommand: docker build --build-arg SERVICE=client -t influencerhub .
-    region: ohio
-    plan: standard
-    branch: main
-    numInstances: 1
-    healthCheckPath: /
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: REACT_APP_API_URL
-        value: https://influencerhub-api.onrender.com
-      - key: REACT_APP_SOCKET_URL
-        value: wss://influencerhub-api.onrender.com
+  # Frontend web application - COMMENTED OUT FOR NOW - FOCUS ON SERVER FIRST
+  # - type: web
+  #   name: influencerhub
+  #   runtime: docker
+  #   repo: https://github.com/phillywraps/InfluencerHUB
+  #   rootDir: .
+  #   dockerfilePath: client/Dockerfile
+  #   buildCommand: docker build -t influencerhub ./client
+  #   region: ohio
+  #   plan: standard
+  #   branch: main
+  #   numInstances: 1
+  #   healthCheckPath: /
+  #   envVars:
+  #     - key: NODE_ENV
+  #       value: production
+  #     - key: REACT_APP_API_URL
+  #       value: https://influencerhub-api.onrender.com
+  #     - key: REACT_APP_SOCKET_URL
+  #       value: wss://influencerhub-api.onrender.com
