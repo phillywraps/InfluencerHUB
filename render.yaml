@@ -6,7 +6,7 @@ services:
     runtime: docker
     repo: https://github.com/phillywraps/InfluencerHUB
     rootDir: server
-    dockerfilePath: ./Dockerfile
+    dockerfilePath: Dockerfile
     region: ohio
     plan: standard
     branch: main
@@ -54,7 +54,7 @@ services:
     runtime: docker
     repo: https://github.com/phillywraps/InfluencerHUB
     rootDir: client
-    dockerfilePath: ./Dockerfile
+    dockerfilePath: Dockerfile
     region: ohio
     plan: standard
     branch: main
