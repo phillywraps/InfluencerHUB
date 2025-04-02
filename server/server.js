@@ -5,9 +5,25 @@ const dotenv = require('dotenv');
 const http = require('http');
 const path = require('path');
 const helmet = require('helmet');
-const { configureCronJobs } = require('./config/cron');
-const logger = require('./config/logger');
-const WebSocketService = require('./utils/webSocketService');
+
+// Attempt to load the main logger, fall back to simpler version if it fails
+let logger;
+try {
+  logger = require('./config/logger');
+  console.log('Using full-featured logger');
+} catch (error) {
+  console.warn('Could not load full-featured logger, using fallback: ', error.message);
+  logger = require('./config/logger.fallback');
+}
+
+// Only try to load cron jobs and web socket service if we're not in a minimal deployment
+let WebSocketService, configureCronJobs;
+try {
+  configureCronJobs = require('./config/cron').configureCronJobs;
+  WebSocketService = require('./utils/webSocketService');
+} catch (error) {
+  console.warn('Could not load some services, running in minimal mode: ', error.message);
+}
 
 // Require models to ensure they're registered
 require('./models/subscriptionModel');
@@ -19,8 +35,15 @@ dotenv.config();
 const app = express();
 const server = http.createServer(app);
 
-// Configure and start cron jobs
-configureCronJobs();
+// Configure and start cron jobs if available
+if (configureCronJobs) {
+  try {
+    configureCronJobs();
+    console.log('Cron jobs configured and started');
+  } catch (error) {
+    console.warn('Error starting cron jobs, continuing without them:', error.message);
+  }
+}
 
 // Import security middleware
 const { corsOptions, applySecurityMiddleware } = require('./middleware/securityMiddleware');
@@ -105,24 +128,58 @@ app.use(handleValidationError);
 app.use(notFound);
 app.use(errorHandler);
 
-// Initialize WebSocket service
-const webSocketService = new WebSocketService(server);
+// Initialize optional services with try/catch blocks to prevent fatal errors
+let webSocketService, notificationSocketService, queryOptimizer;
 
-// Initialize Query Optimizer monitoring
-const queryOptimizer = require('./utils/queryOptimizer');
-logger.info('Query Optimizer initialized and monitoring database performance');
+// Initialize WebSocket service if available
+if (WebSocketService) {
+  try {
+    webSocketService = new WebSocketService(server);
+    console.log('WebSocket service initialized');
+    
+    // Initialize NotificationSocketService with the WebSocketService
+    try {
+      const NotificationSocketService = require('./utils/notificationSocketService');
+      notificationSocketService = new NotificationSocketService(webSocketService);
+      console.log('Notification socket service initialized');
+    } catch (error) {
+      console.warn('Could not initialize notification socket service:', error.message);
+    }
+    
+    // Update controllers to use WebSocket service
+    try {
+      const messageController = require('./controllers/messageController');
+      const rentalController = require('./controllers/rentalController');
+      const notificationController = require('./controllers/notificationController');
+      
+      if (messageController.setSocketService) {
+        messageController.setSocketService(webSocketService);
+      }
+      
+      if (rentalController.setSocketService) {
+        rentalController.setSocketService(webSocketService);
+      }
+      
+      if (notificationController.setSocketService && notificationSocketService) {
+        notificationController.setSocketService(notificationSocketService);
+      }
+      
+      console.log('Controllers configured with socket services');
+    } catch (error) {
+      console.warn('Could not initialize controllers with socket services:', error.message);
+    }
+  } catch (error) {
+    console.warn('Could not initialize WebSocket service:', error.message);
+  }
+}
 
-// Initialize NotificationSocketService with the WebSocketService
-const NotificationSocketService = require('./utils/notificationSocketService');
-const notificationSocketService = new NotificationSocketService(webSocketService);
-
-// Update controllers to use WebSocket service
-const messageController = require('./controllers/messageController');
-const rentalController = require('./controllers/rentalController');
-const notificationController = require('./controllers/notificationController');
-messageController.setSocketService(webSocketService);
-rentalController.setSocketService(webSocketService);
-notificationController.setSocketService(notificationSocketService);
+// Initialize Query Optimizer monitoring if available
+try {
+  queryOptimizer = require('./utils/queryOptimizer');
+  logger.info('Query Optimizer initialized and monitoring database performance');
+} catch (error) {
+  console.warn('Could not initialize query optimizer:', error.message);
+}
 
 // Serve static assets in production
 if (process.env.NODE_ENV === 'production') {

@@ -13,7 +13,10 @@ COPY server/package*.json ./server/
 
 # Install dependencies at both levels
 RUN npm install --omit=dev
-RUN cd server && npm install --omit=dev
+# Install server dependencies, ensuring winston-daily-rotate-file is included
+WORKDIR /app/server
+RUN npm install --omit=dev winston-daily-rotate-file
+WORKDIR /app
 
 # Copy the entire application
 COPY . .
