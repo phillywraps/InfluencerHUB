@@ -1,0 +1,51 @@
+# Render.com Environment Variables Configuration
+#
+# This file documents the environment variables that need to be set on Render.com
+# for the InfluencerHUB application. These values are for reference only and 
+# should be manually added through the Render.com dashboard for security.
+
+# === Backend Server Environment Variables ===
+SERVER_VARIABLES:
+  # Node.js environment
+  - NODE_ENV: production
+  
+  # Server port
+  - PORT: 5000
+  
+  # Database connections
+  - MONGO_URI: ${RENDER_MONGODB_CONNECTION_STRING}
+  - REDIS_URI: ${RENDER_REDIS_CONNECTION_STRING}
+  
+  # Authentication secrets
+  - JWT_SECRET: ${YOUR_JWT_SECRET} # Generate a strong random string
+  - REFRESH_TOKEN_SECRET: ${YOUR_REFRESH_TOKEN_SECRET} # Generate a strong random string
+  
+  # Payment gateway
+  - STRIPE_SECRET_KEY: ${YOUR_STRIPE_SECRET_KEY}
+  - STRIPE_WEBHOOK_SECRET: ${YOUR_STRIPE_WEBHOOK_SECRET}
+  
+  # Integrations
+  - SLACK_WEBHOOK: ${YOUR_SLACK_WEBHOOK}
+  - TIKTOK_CLIENT_KEY: ${YOUR_TIKTOK_CLIENT_KEY}
+  - TIKTOK_CLIENT_SECRET: ${YOUR_TIKTOK_CLIENT_SECRET}
+  
+  # Security
+  - CORS_ORIGIN: https://influencerhub.onrender.com
+  - ENABLE_RATE_LIMITING: true
+  - ENABLE_XSS_PROTECTION: true
+  - ENABLE_CSRF_PROTECTION: true
+  
+# === Frontend Client Environment Variables ===
+CLIENT_VARIABLES:
+  # Node.js environment
+  - NODE_ENV: production
+  
+  # API connection
+  - REACT_APP_API_URL: https://influencerhub-api.onrender.com
+  - REACT_APP_SOCKET_URL: wss://influencerhub-api.onrender.com
+
+# === Database Credentials ===
+DATABASE_VARIABLES:
+  - MONGO_ROOT_USER: ${YOUR_MONGO_USERNAME}
+  - MONGO_ROOT_PASSWORD: ${YOUR_MONGO_PASSWORD}
+  - REDIS_PASSWORD: ${YOUR_REDIS_PASSWORD}

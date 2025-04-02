@@ -1,0 +1,69 @@
+# Render Blueprint file
+services:
+  # Backend API service
+  - type: web
+    name: influencerhub-api
+    runtime: docker
+    repo: https://github.com/phillywraps/InfluencerHUB
+    rootDir: server
+    dockerfilePath: ./Dockerfile
+    region: ohio
+    plan: standard
+    branch: main
+    numInstances: 1
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "5000"
+      - key: JWT_SECRET
+        sync: false
+      - key: REFRESH_TOKEN_SECRET
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: SLACK_WEBHOOK
+        sync: false
+      - key: TIKTOK_CLIENT_KEY
+        sync: false
+      - key: TIKTOK_CLIENT_SECRET
+        sync: false
+      - key: CORS_ORIGIN
+        value: https://influencerhub.onrender.com
+      - key: ENABLE_RATE_LIMITING
+        value: "true"
+      - key: ENABLE_XSS_PROTECTION
+        value: "true"
+      - key: ENABLE_CSRF_PROTECTION
+        value: "true"
+    databases:
+      - name: mongodb
+        databaseName: influencerhub-db
+        user: mongo-user
+        plan: free
+      - name: redis
+        databaseName: influencerhub-redis
+        plan: free
+
+  # Frontend web application
+  - type: web
+    name: influencerhub
+    runtime: docker
+    repo: https://github.com/phillywraps/InfluencerHUB
+    rootDir: client
+    dockerfilePath: ./Dockerfile
+    region: ohio
+    plan: standard
+    branch: main
+    numInstances: 1
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: REACT_APP_API_URL
+        value: https://influencerhub-api.onrender.com
+      - key: REACT_APP_SOCKET_URL
+        value: wss://influencerhub-api.onrender.com

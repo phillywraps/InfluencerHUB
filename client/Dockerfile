@@ -12,8 +12,8 @@ RUN npm ci
 COPY . .
 
 # Set environment variables based on build args
-ARG REACT_APP_API_URL
-ARG REACT_APP_SOCKET_URL
+ARG REACT_APP_API_URL=https://influencerhub-api.onrender.com
+ARG REACT_APP_SOCKET_URL=wss://influencerhub-api.onrender.com
 ENV REACT_APP_API_URL=$REACT_APP_API_URL
 ENV REACT_APP_SOCKET_URL=$REACT_APP_SOCKET_URL
 
@@ -32,6 +32,9 @@ COPY --from=build /app/build /usr/share/nginx/html
 # Add runtime configuration script
 COPY nginx/env.sh /docker-entrypoint.d/40-env.sh
 RUN chmod +x /docker-entrypoint.d/40-env.sh
+
+# Set environment variable for Render.com
+ENV PORT=80
 
 # Add healthcheck
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \

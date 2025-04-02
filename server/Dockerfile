@@ -23,6 +23,9 @@ ENV PORT=5000
 # Expose the port the app will run on
 EXPOSE 5000
 
+# Set health check path for Render.com
+ENV RENDER_HEALTHCHECK_PATH=/api/health
+
 # Health check configuration
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD wget -qO- http://localhost:5000/api/health || exit 1
