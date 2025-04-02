@@ -1,0 +1,249 @@
+name: GCP Automatic Deployment
+
+# Trigger automatically when code is pushed to main or develop branches
+on:
+  push:
+    branches:
+      - main     # Production deployment
+      - develop  # Staging deployment
+    paths:
+      - 'server/**'     # Only trigger when server code changes
+      - 'client/**'     # Only trigger when client code changes
+      - 'infrastructure/terraform/gcp/**' # Only trigger when GCP infrastructure changes
+
+# Prevent concurrent deployments
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Environment variables
+env:
+  NODE_VERSION: 16
+  SERVER_IMAGE: influencerhub-server
+  CLIENT_IMAGE: influencerhub-client
+  TF_VERSION: 1.0.0
+
+jobs:
+  # Prepare deployment parameters
+  prepare:
+    name: Prepare Deployment
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.set-env.outputs.environment }}
+      project_id: ${{ steps.set-env.outputs.project_id }}
+      deploy_infra: ${{ steps.set-env.outputs.deploy_infra }}
+      deploy_app: ${{ steps.set-env.outputs.deploy_app }}
+    steps:
+      - name: Set Environment Variables
+        id: set-env
+        run: |
+          # Determine environment based on branch
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "environment=prod" >> $GITHUB_OUTPUT
+            echo "project_id=${{ secrets.GCP_PROJECT_ID_PROD }}" >> $GITHUB_OUTPUT
+          else
+            echo "environment=staging" >> $GITHUB_OUTPUT
+            echo "project_id=${{ secrets.GCP_PROJECT_ID_STAGING }}" >> $GITHUB_OUTPUT
+          fi
+          
+          # Check what paths were changed to determine what to deploy
+          CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }})
+          
+          # Check if infrastructure files were changed
+          if echo "$CHANGED_FILES" | grep -q 'infrastructure/terraform/gcp/'; then
+            echo "deploy_infra=true" >> $GITHUB_OUTPUT
+          else
+            echo "deploy_infra=false" >> $GITHUB_OUTPUT
+          fi
+          
+          # Check if application files were changed
+          if echo "$CHANGED_FILES" | grep -q -e 'server/' -e 'client/'; then
+            echo "deploy_app=true" >> $GITHUB_OUTPUT
+          else
+            echo "deploy_app=false" >> $GITHUB_OUTPUT
+          fi
+
+  # Lint and test code
+  lint-test:
+    name: Lint and Test
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      # Server tests
+      - name: Install server dependencies
+        working-directory: ./server
+        run: npm ci
+      
+      - name: Lint server code
+        working-directory: ./server
+        run: npm run lint
+        
+      - name: Test server
+        working-directory: ./server
+        run: npm test
+      
+      # Client tests
+      - name: Install client dependencies
+        working-directory: ./client
+        run: npm ci
+      
+      - name: Lint client code
+        working-directory: ./client
+        run: npm run lint
+        
+      - name: Test client
+        working-directory: ./client
+        run: npm test
+
+  # Deploy infrastructure (if changed)
+  deploy-infrastructure:
+    name: Deploy Infrastructure
+    needs: [prepare, lint-test]
+    if: needs.prepare.outputs.deploy_infra == 'true'
+    runs-on: ubuntu-latest
+    env:
+      ENVIRONMENT: ${{ needs.prepare.outputs.environment }}
+      PROJECT_ID: ${{ needs.prepare.outputs.project_id }}
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      
+      # Authenticate to GCP
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: ${{ secrets.ENVIRONMENT == 'prod' && secrets.GCP_SA_KEY_prod || secrets.GCP_SA_KEY_staging }}
+      
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+      
+      # Deploy with Terraform
+      - name: Initialize Terraform
+        working-directory: ./infrastructure/terraform/gcp
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ env.PROJECT_ID }}-tf-state" \
+            -backend-config="prefix=${{ env.ENVIRONMENT }}"
+      
+      - name: Validate Terraform configuration
+        working-directory: ./infrastructure/terraform/gcp
+        run: terraform validate
+      
+      - name: Create Terraform plan
+        working-directory: ./infrastructure/terraform/gcp
+        run: |
+          terraform plan \
+            -var-file="environments/${{ env.ENVIRONMENT }}.tfvars" \
+            -out=tfplan
+      
+      - name: Apply Terraform changes
+        working-directory: ./infrastructure/terraform/gcp
+        run: terraform apply -auto-approve tfplan
+
+  # Deploy application (if app code changed)
+  deploy-application:
+    name: Deploy Application
+    needs: [prepare, lint-test]
+    if: needs.prepare.outputs.deploy_app == 'true'
+    runs-on: ubuntu-latest
+    env:
+      ENVIRONMENT: ${{ needs.prepare.outputs.environment }}
+      PROJECT_ID: ${{ needs.prepare.outputs.project_id }}
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      # Authenticate to GCP
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: ${{ secrets.ENVIRONMENT == 'prod' && secrets.GCP_SA_KEY_prod || secrets.GCP_SA_KEY_staging }}
+      
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+      
+      # Set up Docker for building images
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      
+      # Build and deploy server
+      - name: Build and push server image
+        id: build-server
+        uses: docker/build-push-action@v4
+        with:
+          context: ./server
+          push: true
+          tags: gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVER_IMAGE }}:${{ github.sha }}
+      
+      - name: Deploy server to Cloud Run
+        id: deploy-server
+        uses: google-github-actions/deploy-cloudrun@v1
+        with:
+          service: influencerhub-api-${{ env.ENVIRONMENT }}
+          image: gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVER_IMAGE }}:${{ github.sha }}
+          region: us-central1
+          env_vars: |
+            NODE_ENV=production
+            MONGO_URI=${{ env.ENVIRONMENT == 'prod' && secrets.PRODUCTION_MONGO_URI || secrets.STAGING_MONGO_URI }}
+            JWT_SECRET=${{ env.ENVIRONMENT == 'prod' && secrets.PRODUCTION_JWT_SECRET || secrets.STAGING_JWT_SECRET }}
+            REFRESH_TOKEN_SECRET=${{ env.ENVIRONMENT == 'prod' && secrets.PRODUCTION_REFRESH_TOKEN_SECRET || secrets.STAGING_REFRESH_TOKEN_SECRET }}
+            STRIPE_SECRET_KEY=${{ env.ENVIRONMENT == 'prod' && secrets.PRODUCTION_STRIPE_SECRET_KEY || secrets.STRIPE_SECRET_KEY_STAGING }}
+            STRIPE_WEBHOOK_SECRET=${{ env.ENVIRONMENT == 'prod' && secrets.PRODUCTION_STRIPE_WEBHOOK_SECRET || secrets.STAGING_STRIPE_WEBHOOK_SECRET }}
+      
+      # Build and deploy client
+      - name: Install client dependencies
+        working-directory: ./client
+        run: npm ci
+      
+      - name: Build client
+        working-directory: ./client
+        run: |
+          REACT_APP_API_URL=https://influencerhub-api-${{ env.ENVIRONMENT }}-abcdef123.a.run.app
+          REACT_APP_SOCKET_URL=wss://influencerhub-api-${{ env.ENVIRONMENT }}-abcdef123.a.run.app
+          npm run build
+      
+      - name: Upload client to Cloud Storage
+        run: |
+          gsutil -m cp -r ./client/build/* gs://influencerhub-${{ env.ENVIRONMENT }}-client/
+      
+      # Get deployment URLs
+      - name: Get deployment URLs
+        id: urls
+        run: |
+          echo "server_url=${{ steps.deploy-server.outputs.url }}" >> $GITHUB_ENV
+          echo "client_url=https://storage.googleapis.com/influencerhub-${{ env.ENVIRONMENT }}-client/index.html" >> $GITHUB_ENV
+      
+      # Notify team of deployment
+      - name: Notify of deployment
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_COLOR: '#57D9A3'
+          SLACK_TITLE: 'Automatic Deployment Completed'
+          SLACK_MESSAGE: |
+            InfluencerHUB has been automatically deployed to ${{ env.ENVIRONMENT }} environment:
+            - API: ${{ env.server_url }}
+            - Client: ${{ env.client_url }}
+            
+            Deployment triggered by ${{ github.actor }} with commit: ${{ github.sha }}

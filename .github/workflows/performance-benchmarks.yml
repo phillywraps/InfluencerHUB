@@ -1,0 +1,344 @@
+name: Performance Benchmarks
+
+on:
+  # Run on main and develop branch pushes
+  push:
+    branches: [main, develop]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  
+  # Run on pull requests to main or develop
+  pull_request:
+    branches: [main, develop]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      threshold:
+        description: 'Regression threshold percentage'
+        required: false
+        default: '10'
+        type: 'string'
+  
+  # Run on a schedule (once a day)
+  schedule:
+    - cron: '0 2 * * *'  # Run at 2 AM UTC every day
+
+# Environment variables
+env:
+  NODE_VERSION: 16
+  MONGODB_TEST_URI: 'mongodb://localhost:27017/influencer-platform-test'
+
+jobs:
+  api-benchmarks:
+    name: API Performance Benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    services:
+      # MongoDB service container for testing
+      mongodb:
+        image: mongo:4.4
+        ports:
+          - 27017:27017
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 5  # Need some history for comparison
+      
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      # Get benchmark artifact from previous run if available
+      - name: Download previous benchmark data
+        uses: dawidd6/action-download-artifact@v2
+        continue-on-error: true
+        with:
+          workflow: performance-benchmarks.yml
+          workflow_conclusion: success
+          name: benchmark-results
+          path: benchmark-results
+          if_no_artifact_found: ignore
+      
+      # Install server dependencies
+      - name: Install server dependencies
+        working-directory: ./server
+        run: npm ci
+      
+      # Set up test database with seed data
+      - name: Prepare test database
+        working-directory: ./server
+        run: |
+          echo "Setting up test database..."
+          mkdir -p scripts
+          cat > scripts/setup-test-db.js << 'EOL'
+          const mongoose = require('mongoose');
+          const User = require('../models/userModel');
+          const Influencer = require('../models/influencerModel');
+          const Content = require('../models/contentModel');
+
+          // Connect to test database
+          mongoose.connect('mongodb://localhost:27017/influencer-platform-test', {
+            useNewUrlParser: true,
+            useUnifiedTopology: true
+          })
+            .then(() => console.log('Connected to test MongoDB'))
+            .catch(err => console.error('Failed to connect to test MongoDB', err));
+
+          async function seedDatabase() {
+            try {
+              // Clean database
+              await mongoose.connection.dropDatabase();
+              
+              // Create test user
+              const user = await User.create({
+                email: 'benchmark@example.com',
+                username: 'benchmark_user',
+                password: 'password123',
+                role: 'influencer'
+              });
+              
+              // Create influencer profile
+              const influencer = await Influencer.create({
+                userId: user._id,
+                name: 'Benchmark Influencer',
+                bio: 'Used for performance testing',
+                platforms: ['tiktok', 'instagram']
+              });
+              
+              // Create test content
+              for (let i = 0; i < 20; i++) {
+                await Content.create({
+                  title: `Benchmark Content ${i}`,
+                  description: 'Created for performance testing',
+                  mediaUrls: ['https://example.com/test.mp4'],
+                  creator: user._id,
+                  status: i % 3 === 0 ? 'draft' : (i % 3 === 1 ? 'scheduled' : 'published')
+                });
+              }
+              
+              console.log('Database seeded successfully');
+              process.exit(0);
+            } catch (error) {
+              console.error('Error seeding database:', error);
+              process.exit(1);
+            }
+          }
+
+          seedDatabase();
+          EOL
+          
+          node scripts/setup-test-db.js
+      
+      # Start server for testing
+      - name: Start server in background
+        working-directory: ./server
+        run: |
+          npm run build
+          NODE_ENV=test nohup npm start > server.log 2>&1 &
+          echo $! > server.pid
+          echo "Started server with PID $(cat server.pid)"
+          # Wait for server to be ready
+          sleep 10
+          curl http://localhost:5000/api/health || (cat server.log && exit 1)
+      
+      # Run performance benchmarks
+      - name: Run API performance benchmarks
+        working-directory: ./server
+        run: |
+          # Set threshold from input or default
+          THRESHOLD="${{ github.event.inputs.threshold || '10' }}"
+          
+          echo "Running performance benchmarks with threshold $THRESHOLD%..."
+          node __tests__/performance/api-performance-benchmarks.js --ci --threshold=$THRESHOLD
+          
+          # Check if benchmark results were generated
+          if [ ! -d "benchmark-results" ]; then
+            echo "No benchmark results were generated"
+            exit 1
+          fi
+      
+      # Generate performance report
+      - name: Generate performance report
+        working-directory: ./server
+        run: |
+          echo "## Performance Benchmark Report" > performance-report.md
+          echo "" >> performance-report.md
+          echo "### API Endpoints Performance" >> performance-report.md
+          echo "" >> performance-report.md
+          
+          if [ -f "benchmark-results/api-performance-report.md" ]; then
+            cat benchmark-results/api-performance-report.md >> performance-report.md
+          else
+            echo "No API performance report found" >> performance-report.md
+          fi
+          
+          # Add links to artifacts
+          echo "" >> performance-report.md
+          echo "### Detailed Reports" >> performance-report.md
+          echo "" >> performance-report.md
+          echo "Detailed benchmark results are available in the workflow artifacts." >> performance-report.md
+      
+      # Upload benchmark results
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v3
+        with:
+          name: benchmark-results
+          path: server/benchmark-results/
+          retention-days: 90
+      
+      # Upload performance report
+      - name: Upload performance report
+        uses: actions/upload-artifact@v3
+        with:
+          name: performance-report
+          path: server/performance-report.md
+          retention-days: 90
+      
+      # Comment on pull request with performance results
+      - name: Comment on PR with performance results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const performanceReport = fs.readFileSync('server/performance-report.md', 'utf8');
+            
+            const prComment = `## Performance Benchmark Results
+
+            ${performanceReport}
+            
+            [Full Report](${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID})
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: prComment
+            });
+      
+      # Clean up server
+      - name: Stop server
+        working-directory: ./server
+        run: |
+          if [ -f "server.pid" ]; then
+            echo "Stopping server with PID $(cat server.pid)"
+            kill $(cat server.pid) || true
+          fi
+
+  frontend-benchmarks:
+    name: Frontend Performance Benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      # Install client dependencies
+      - name: Install client dependencies
+        working-directory: ./client
+        run: npm ci
+      
+      # Build client for testing
+      - name: Build client
+        working-directory: ./client
+        run: npm run build
+      
+      # Install Lighthouse CI
+      - name: Install Lighthouse CI
+        run: npm install -g @lhci/cli@0.9.x
+      
+      # Serve client build
+      - name: Start client server
+        working-directory: ./client
+        run: |
+          npx serve -s build -l 3000 &
+          echo $! > client.pid
+          echo "Started client server with PID $(cat client.pid)"
+          # Wait for server to be ready
+          sleep 5
+          curl http://localhost:3000/ || exit 1
+      
+      # Run Lighthouse CI
+      - name: Run Lighthouse CI
+        run: |
+          lhci autorun --upload.target=temporary-public-storage --collect.url=http://localhost:3000
+      
+      # Clean up client server
+      - name: Stop client server
+        working-directory: ./client
+        run: |
+          if [ -f "client.pid" ]; then
+            echo "Stopping client server with PID $(cat client.pid)"
+            kill $(cat client.pid) || true
+          fi
+      
+      # Upload Lighthouse results
+      - name: Upload Lighthouse results
+        uses: actions/upload-artifact@v3
+        with:
+          name: lighthouse-results
+          path: .lighthouseci/
+          retention-days: 90
+
+  performance-summary:
+    name: Performance Summary
+    runs-on: ubuntu-latest
+    needs: [api-benchmarks, frontend-benchmarks]
+    if: always()
+    steps:
+      - name: Download all performance reports
+        uses: actions/download-artifact@v3
+        with:
+          path: performance-reports
+      
+      - name: Create summary report
+        run: |
+          echo "# Performance Benchmark Summary" > performance-summary.md
+          echo "" >> performance-summary.md
+          echo "## Benchmark Run: $(date)" >> performance-summary.md
+          echo "" >> performance-summary.md
+          
+          # API Benchmarks Summary
+          echo "## API Performance" >> performance-summary.md
+          echo "" >> performance-summary.md
+          if [ -f "performance-reports/performance-report/performance-report.md" ]; then
+            cat performance-reports/performance-report/performance-report.md >> performance-summary.md
+          else
+            echo "❌ API benchmarks failed or did not complete" >> performance-summary.md
+          fi
+          
+          echo "" >> performance-summary.md
+          echo "## Frontend Performance" >> performance-summary.md
+          echo "" >> performance-summary.md
+          if [ -d "performance-reports/lighthouse-results" ]; then
+            echo "✅ Lighthouse performance tests completed" >> performance-summary.md
+            echo "Results available in workflow artifacts" >> performance-summary.md
+          else
+            echo "❌ Frontend benchmarks failed or did not complete" >> performance-summary.md
+          fi
+      
+      # Upload consolidated report
+      - name: Upload consolidated report
+        uses: actions/upload-artifact@v3
+        with:
+          name: performance-summary
+          path: performance-summary.md
+          retention-days: 90

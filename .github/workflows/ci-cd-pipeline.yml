@@ -1,0 +1,747 @@
+name: CI/CD Pipeline
+
+# Workflow triggers
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+# Prevent concurrent deployments to the same environment
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Define environment variables used across jobs
+env:
+  NODE_VERSION: 16
+  SERVER_IMAGE: influencerhub-server
+  CLIENT_IMAGE: influencerhub-client
+
+jobs:
+  # Code quality validation
+  lint:
+    name: Code Quality Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          
+      - name: Install server dependencies
+        working-directory: ./server
+        run: npm ci
+        
+      - name: Lint server code
+        working-directory: ./server
+        run: npm run lint
+        
+      - name: Install client dependencies
+        working-directory: ./client
+        run: npm ci
+        
+      - name: Lint client code
+        working-directory: ./client
+        run: npm run lint
+      
+      # Run npm audit on server dependencies
+      - name: NPM security audit (server)
+        working-directory: ./server
+        run: npm audit --production --audit-level=high
+
+      # Run npm audit on client dependencies
+      - name: NPM security audit (client)
+        working-directory: ./client
+        run: npm audit --production --audit-level=high
+      
+      # Comprehensive dependency security scan
+      - name: Security scan with OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'InfluencerHUB'
+          path: '.'
+          format: 'HTML,SARIF'
+          args: >
+            --suppression ./.github/suppressions.xml
+            --failOnCVSS 7
+            --enableRetired
+            --enableExperimental
+      
+      # Upload comprehensive security reports for later review
+      - name: Upload security reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: dependency-security-reports
+          path: |
+            ${{ github.workspace }}/reports
+            ${{ github.workspace }}/**/dependency-check-report.sarif
+          retention-days: 30
+
+  # Build and test both server and client applications
+  build-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    needs: lint
+    # Add timeout to prevent builds from running indefinitely
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      # Server build and test
+      - name: Install server dependencies
+        working-directory: ./server
+        run: npm ci
+      
+      - name: Build server
+        working-directory: ./server
+        run: npm run build
+      
+      - name: Test server
+        working-directory: ./server
+        run: npm test
+      
+      # Client build and test
+      - name: Install client dependencies
+        working-directory: ./client
+        run: npm ci
+      
+      - name: Build client
+        working-directory: ./client
+        run: npm run build
+      
+      - name: Test client
+        working-directory: ./client
+        run: npm test
+      
+      # Store artifacts
+      - name: Package server build
+        run: tar -czf server-build.tar.gz -C server/build .
+      
+      - name: Package client build
+        run: tar -czf client-build.tar.gz -C client/build .
+      
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-artifacts
+          path: |
+            server-build.tar.gz
+            client-build.tar.gz
+          retention-days: 7
+
+  # Core functionality integration tests
+  integration-tests:
+    name: Core Feature Integration Tests
+    runs-on: ubuntu-latest
+    needs: build-test
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      # Install dependencies
+      - name: Install server dependencies
+        working-directory: ./server
+        run: npm ci
+      
+      - name: Install client dependencies
+        working-directory: ./client
+        run: npm ci
+        
+      - name: Install mobile dependencies
+        working-directory: ./mobile
+        run: npm ci
+      
+      # Test TikTok integration - one of the core features
+      - name: TikTok Integration Tests
+        working-directory: ./server
+        run: |
+          echo "Running TikTok API integration tests"
+          npm run test:integration -- --testPathPattern=tiktokPublishingIntegration
+      
+      - name: TikTok Mobile Integration Tests
+        working-directory: ./mobile
+        run: |
+          echo "Running mobile TikTok scheduling integration tests"
+          npm run test:integration -- --testPathPattern=tiktokSchedulingIntegration
+          
+      # Test payment processing - another core feature
+      - name: Payment Processing Tests
+        working-directory: ./server
+        run: |
+          echo "Running payment processing tests"
+          npm run test -- --testPathPattern=paymentController
+          
+      - name: Mobile Payment Integration Tests
+        working-directory: ./mobile
+        run: |
+          echo "Running mobile payment integration tests"
+          npm run test:accessibility -- --testPathPattern=PaymentFlow.a11y
+      
+      # Test accessibility features - another core feature
+      - name: Accessibility Tests
+        working-directory: ./client
+        run: |
+          echo "Running client accessibility tests"
+          npm run test:accessibility
+          
+      - name: Mobile Accessibility Tests
+        working-directory: ./mobile
+        run: |
+          echo "Running mobile accessibility tests"
+          npm run test:accessibility -- --testPathPattern=accessibility
+
+      # Generate integration test reports
+      - name: Generate integration test report
+        run: |
+          mkdir -p test-reports
+          echo "# Core Feature Integration Test Summary" > test-reports/integration-summary.md
+          echo "## Timestamp: $(date)" >> test-reports/integration-summary.md
+          echo "## Build: ${{ github.sha }}" >> test-reports/integration-summary.md
+          echo "" >> test-reports/integration-summary.md
+          echo "### TikTok Integration" >> test-reports/integration-summary.md
+          echo "✅ Server-side TikTok API integration tests completed" >> test-reports/integration-summary.md
+          echo "✅ Mobile TikTok scheduling integration tests completed" >> test-reports/integration-summary.md
+          echo "" >> test-reports/integration-summary.md
+          echo "### Payment Processing" >> test-reports/integration-summary.md
+          echo "✅ Server-side payment controller tests completed" >> test-reports/integration-summary.md
+          echo "✅ Mobile payment flow accessibility tests completed" >> test-reports/integration-summary.md
+          echo "" >> test-reports/integration-summary.md
+          echo "### Accessibility" >> test-reports/integration-summary.md
+          echo "✅ Client accessibility compliance tests completed" >> test-reports/integration-summary.md
+          echo "✅ Mobile accessibility tests completed" >> test-reports/integration-summary.md
+          
+      # Upload the test report as an artifact
+      - name: Upload integration test report
+        uses: actions/upload-artifact@v3
+        with:
+          name: integration-test-report
+          path: test-reports/integration-summary.md
+          retention-days: 30
+          
+  # E2E tests for core functionality
+  e2e-tests:
+    name: End-to-End Tests
+    runs-on: ubuntu-latest
+    needs: build-test
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+  
+      # Install dependencies
+      - name: Install E2E test dependencies
+        working-directory: ./mobile/e2e
+        run: npm ci
+        
+      # Run mobile E2E tests
+      - name: Run TikTok Scheduler E2E Tests
+        working-directory: ./mobile
+        run: |
+          echo "Running TikTok scheduler E2E tests"
+          npm run e2e -- --testPathPattern=tiktok-scheduler
+          
+      - name: Run Influencer Dashboard E2E Tests
+        working-directory: ./mobile
+        run: |
+          echo "Running influencer dashboard E2E tests"
+          npm run e2e -- --testPathPattern=influencer-dashboard
+          
+      # Run server API E2E tests
+      - name: Run Server API Workflow Tests
+        working-directory: ./server
+        run: |
+          echo "Running API workflow E2E tests"
+          npm run test:e2e
+          
+      # Generate E2E test report
+      - name: Generate E2E test report
+        run: |
+          mkdir -p test-reports
+          echo "# End-to-End Test Summary" > test-reports/e2e-summary.md
+          echo "## Timestamp: $(date)" >> test-reports/e2e-summary.md
+          echo "## Build: ${{ github.sha }}" >> test-reports/e2e-summary.md
+          echo "" >> test-reports/e2e-summary.md
+          echo "### Mobile E2E Tests" >> test-reports/e2e-summary.md
+          echo "✅ TikTok scheduler E2E tests completed" >> test-reports/e2e-summary.md
+          echo "✅ Influencer dashboard E2E tests completed" >> test-reports/e2e-summary.md
+          echo "" >> test-reports/e2e-summary.md
+          echo "### Server API E2E Tests" >> test-reports/e2e-summary.md
+          echo "✅ API workflow E2E tests completed" >> test-reports/e2e-summary.md
+      
+      # Upload the E2E test report as an artifact
+      - name: Upload E2E test report
+        uses: actions/upload-artifact@v3
+        with:
+          name: e2e-test-report
+          path: test-reports/e2e-summary.md
+          retention-days: 30
+
+  # Build Docker images
+  docker-build:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: [build-test, integration-tests, e2e-tests]
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      server_image_tag: ${{ steps.tag-images.outputs.server_image_tag }}
+      client_image_tag: ${{ steps.tag-images.outputs.client_image_tag }}
+    steps:
+      - uses: actions/checkout@v3
+      
+      # Log in to container registry
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      # Generate unique image tags
+      - name: Generate image tags
+        id: tag-images
+        run: |
+          SHA_SHORT=$(echo ${{ github.sha }} | cut -c1-7)
+          SERVER_IMAGE_TAG="ghcr.io/${{ github.repository }}/${{ env.SERVER_IMAGE }}:$SHA_SHORT"
+          CLIENT_IMAGE_TAG="ghcr.io/${{ github.repository }}/${{ env.CLIENT_IMAGE }}:$SHA_SHORT"
+          
+          echo "server_image_tag=$SERVER_IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "client_image_tag=$CLIENT_IMAGE_TAG" >> $GITHUB_OUTPUT
+      
+      # Build server image
+      - name: Build server Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./server
+          push: true
+          tags: ${{ steps.tag-images.outputs.server_image_tag }}
+          cache-from: type=registry,ref=${{ steps.tag-images.outputs.server_image_tag }}
+          cache-to: type=inline
+      
+      # Build client image
+      - name: Build client Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./client
+          push: true
+          tags: ${{ steps.tag-images.outputs.client_image_tag }}
+          cache-from: type=registry,ref=${{ steps.tag-images.outputs.client_image_tag }}
+          cache-to: type=inline
+          build-args: |
+            REACT_APP_API_URL=RUNTIME_API_URL_PLACEHOLDER
+            REACT_APP_SOCKET_URL=RUNTIME_SOCKET_URL_PLACEHOLDER
+      
+      # Comprehensive security scanning for Docker images
+      - name: Scan server image for vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.tag-images.outputs.server_image_tag }}
+          format: 'sarif'
+          output: 'trivy-server-results.sarif'
+          # Don't fail on medium/low - but collect data for reporting
+          severity: 'CRITICAL,HIGH,MEDIUM,LOW'
+          # Exit with error code on critical and high vulnerabilities
+          exit-code: '0'
+          ignore-unfixed: false
+          vuln-type: 'os,library'
+      
+      - name: Scan client image for vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.tag-images.outputs.client_image_tag }}
+          format: 'sarif'
+          output: 'trivy-client-results.sarif'
+          # Don't fail on medium/low - but collect data for reporting
+          severity: 'CRITICAL,HIGH,MEDIUM,LOW'
+          # Exit with error code on critical and high vulnerabilities  
+          exit-code: '0'
+          ignore-unfixed: false
+          vuln-type: 'os,library'
+      
+      # Upload scan results for review and auditing
+      - name: Upload vulnerability reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: vulnerability-reports
+          path: |
+            trivy-server-results.sarif
+            trivy-client-results.sarif
+          retention-days: 30
+      
+      # Fail the build if CRITICAL or HIGH vulnerabilities are found in the server image
+      - name: Check for HIGH or CRITICAL vulnerabilities in Server
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.tag-images.outputs.server_image_tag }}
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: false
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+      
+      # Fail the build if CRITICAL or HIGH vulnerabilities are found in the client image
+      - name: Check for HIGH or CRITICAL vulnerabilities in Client
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.tag-images.outputs.client_image_tag }}
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: false
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
+  # Deploy to staging environment
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: docker-build
+    timeout-minutes: 30
+    # Only run when pushing to develop branch or manually triggering with staging environment
+    if: github.ref == 'refs/heads/develop' || github.event.inputs.environment == 'staging'
+    # Define deployment environment for GitHub environments and approvals
+    environment:
+      name: staging
+      url: ${{ steps.deploy.outputs.deployment_url }}
+    # Only need read permission for repo content
+    permissions:
+      contents: read
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      # Set up SSH for deployment
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.7.0
+        with:
+          ssh-private-key: ${{ secrets.STAGING_SSH_KEY }}
+      
+      # Create deployment configuration
+      - name: Create deployment configuration
+        run: |
+          mkdir -p deploy
+          cat > deploy/docker-compose.yml << EOL
+          version: '3.8'
+          
+          services:
+            server:
+              image: ${{ needs.docker-build.outputs.server_image_tag }}
+              restart: always
+              ports:
+                - "5000:5000"
+              environment:
+                - NODE_ENV=production
+                - MONGO_URI=${{ secrets.STAGING_MONGO_URI }}
+                - JWT_SECRET=${{ secrets.STAGING_JWT_SECRET }}
+                - REFRESH_TOKEN_SECRET=${{ secrets.STAGING_REFRESH_TOKEN_SECRET }}
+                - STRIPE_SECRET_KEY=${{ secrets.STRIPE_SECRET_KEY_STAGING }}
+                - STRIPE_WEBHOOK_SECRET=${{ secrets.STAGING_STRIPE_WEBHOOK_SECRET }}
+                - SLACK_WEBHOOK=${{ secrets.STAGING_SLACK_WEBHOOK }}
+            
+            client:
+              image: ${{ needs.docker-build.outputs.client_image_tag }}
+              restart: always
+              ports:
+                - "80:80"
+              environment:
+                - API_URL=http://server:5000
+                - SOCKET_URL=ws://server:5000
+                - REACT_APP_API_URL=https://${{ secrets.STAGING_DOMAIN }}
+                - REACT_APP_SOCKET_URL=ws://${{ secrets.STAGING_DOMAIN }}
+              depends_on:
+                - server
+          EOL
+      
+      # Deploy to staging server
+      - name: Deploy to staging server
+        id: deploy
+        env:
+          STAGING_SERVER_USER: ${{ secrets.STAGING_SERVER_USER }}
+          STAGING_SERVER_HOST: ${{ secrets.STAGING_SERVER_HOST }}
+          STAGING_DOMAIN: ${{ secrets.STAGING_DOMAIN }}
+        run: |
+          # Copy docker-compose file to server
+          scp -o StrictHostKeyChecking=no deploy/docker-compose.yml $STAGING_SERVER_USER@$STAGING_SERVER_HOST:~/influencerhub/
+          
+          # Execute deployment commands
+          ssh -o StrictHostKeyChecking=no $STAGING_SERVER_USER@$STAGING_SERVER_HOST "
+            cd ~/influencerhub
+            docker-compose pull
+            docker-compose down
+            docker-compose up -d
+            
+            # Wait for services to be healthy
+            echo \"Waiting for services to be healthy...\"
+            sleep 30
+            
+            # Store the domain for verification
+            DOMAIN=\"$STAGING_DOMAIN\"
+            
+            # Verify deployment
+            if curl -s http://localhost/api/health | grep -q \"ok\"; then
+              echo \"Deployment successful!\"
+              exit 0
+            else
+              echo \"Deployment failed health check!\"
+              exit 1
+            fi
+          "
+          
+          echo "deployment_url=https://$STAGING_DOMAIN" >> $GITHUB_OUTPUT
+      
+      # Notify on successful staging deployment
+      - name: Notify successful staging deployment
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_COLOR: '#57D9A3'
+          SLACK_TITLE: 'Staging Deployment Successful'
+          SLACK_MESSAGE: 'InfluencerHUB has been successfully deployed to staging at ${{ steps.deploy.outputs.deployment_url }}'
+
+  # Security summary and verification before production deployment
+  security-gate:
+    name: Security Gate Check
+    runs-on: ubuntu-latest
+    needs: [docker-build, deploy-staging]
+    # Only run when pushing to main branch or manually triggering with production environment
+    if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'production'
+    steps:
+      - uses: actions/checkout@v3
+      
+      # Download all security reports to summarize
+      - name: Download vulnerability reports
+        uses: actions/download-artifact@v3
+        with:
+          name: vulnerability-reports
+          path: security-reports
+      
+      - name: Download dependency security reports
+        uses: actions/download-artifact@v3
+        with:
+          name: dependency-security-reports
+          path: dependency-reports
+      
+      # Generate a security summary report for review
+      - name: Generate security summary
+        run: |
+          echo "# Security Scan Summary" > security-summary.md
+          echo "## Timestamp: $(date)" >> security-summary.md
+          echo "## Build: ${{ github.sha }}" >> security-summary.md
+          echo "" >> security-summary.md
+          
+          echo "### Dependency Check" >> security-summary.md
+          echo "Dependency security scans completed. Review full reports in artifacts." >> security-summary.md
+          echo "" >> security-summary.md
+          
+          echo "### Docker Image Scans" >> security-summary.md
+          echo "Container security scans completed. No CRITICAL or HIGH vulnerabilities were found that would block deployment." >> security-summary.md
+          echo "Review full reports in artifacts for MEDIUM and LOW severity issues to address in future sprints." >> security-summary.md
+          echo "" >> security-summary.md
+          
+          echo "### Security Status" >> security-summary.md
+          echo "✅ All security gates passed" >> security-summary.md
+          echo "Production deployment approved from a security perspective." >> security-summary.md
+      
+      # Upload the summary as an artifact
+      - name: Upload security summary
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-summary
+          path: security-summary.md
+          retention-days: 90
+
+  # Deploy to production environment (with approval)
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [docker-build, deploy-staging, security-gate]
+    timeout-minutes: 45
+    # Only run when pushing to main branch or manually triggering with production environment
+    if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'production'
+    # Define environment for GitHub environments and approvals
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.deployment_url }}
+    # Only need read permission for repo content
+    permissions:
+      contents: write # Write needed for creating deployment tag
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      # Set up SSH for deployment
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.7.0
+        with:
+          ssh-private-key: ${{ secrets.PRODUCTION_SSH_KEY }}
+      
+      # Create deployment configuration
+      - name: Create deployment configuration
+        run: |
+          mkdir -p deploy
+          cat > deploy/docker-compose.yml << EOL
+          version: '3.8'
+          
+          services:
+            server:
+              image: ${{ needs.docker-build.outputs.server_image_tag }}
+              restart: always
+              ports:
+                - "5000:5000"
+              environment:
+                - NODE_ENV=production
+                - MONGO_URI=${{ secrets.PRODUCTION_MONGO_URI }}
+                - JWT_SECRET=${{ secrets.PRODUCTION_JWT_SECRET }}
+                - REFRESH_TOKEN_SECRET=${{ secrets.PRODUCTION_REFRESH_TOKEN_SECRET }}
+                - STRIPE_SECRET_KEY=${{ secrets.PRODUCTION_STRIPE_SECRET_KEY }}
+                - STRIPE_WEBHOOK_SECRET=${{ secrets.PRODUCTION_STRIPE_WEBHOOK_SECRET }}
+                - SLACK_WEBHOOK=${{ secrets.PRODUCTION_SLACK_WEBHOOK }}
+                - ENABLE_RATE_LIMITING=true
+                - ENABLE_XSS_PROTECTION=true
+                - ENABLE_CSRF_PROTECTION=true
+            
+            client:
+              image: ${{ needs.docker-build.outputs.client_image_tag }}
+              restart: always
+              ports:
+                - "80:80"
+                - "443:443"
+              environment:
+                - API_URL=https://${{ secrets.PRODUCTION_DOMAIN }}/api
+                - SOCKET_URL=wss://${{ secrets.PRODUCTION_DOMAIN }}
+                - REACT_APP_API_URL=https://${{ secrets.PRODUCTION_DOMAIN }}
+                - REACT_APP_SOCKET_URL=wss://${{ secrets.PRODUCTION_DOMAIN }}
+              volumes:
+                - ./certbot/conf:/etc/letsencrypt
+                - ./certbot/www:/var/www/certbot
+              depends_on:
+                - server
+          
+            # Certbot service
+            certbot:
+              image: certbot/certbot
+              volumes:
+                - ./certbot/conf:/etc/letsencrypt
+                - ./certbot/www:/var/www/certbot
+              entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+          EOL
+      
+      # Deploy to production server
+      - name: Deploy to production server
+        id: deploy
+        env:
+          PRODUCTION_SERVER_USER: ${{ secrets.PRODUCTION_SERVER_USER }}
+          PRODUCTION_SERVER_HOST: ${{ secrets.PRODUCTION_SERVER_HOST }}
+          PRODUCTION_DOMAIN: ${{ secrets.PRODUCTION_DOMAIN }}
+        run: |
+          # Copy docker-compose file to server
+          scp -o StrictHostKeyChecking=no deploy/docker-compose.yml $PRODUCTION_SERVER_USER@$PRODUCTION_SERVER_HOST:~/influencerhub/
+          
+          # Execute deployment commands with database backup
+          ssh -o StrictHostKeyChecking=no $PRODUCTION_SERVER_USER@$PRODUCTION_SERVER_HOST "
+            # Backup database before deployment
+            TIMESTAMP=\$(date +%Y%m%d_%H%M%S)
+            mkdir -p ~/backups
+            docker exec influencerhub-mongodb mongodump --out=/dump
+            docker cp influencerhub-mongodb:/dump ~/backups/db_backup_\$TIMESTAMP
+            
+            cd ~/influencerhub
+            
+            # Deploy new version
+            docker-compose pull
+            docker-compose down
+            docker-compose up -d
+            
+            # Wait for services to be healthy
+            echo \"Waiting for services to be healthy...\"
+            sleep 60
+            
+            # Store the domain for verification
+            DOMAIN=\"$PRODUCTION_DOMAIN\"
+            
+            # Verify deployment
+            if curl -s https://\$DOMAIN/api/health | grep -q \"ok\"; then
+              echo \"Deployment successful!\"
+              exit 0
+            else
+              echo \"Deployment failed health check! Rolling back...\"
+              # Restore from previous version
+              cd ~/influencerhub-backup
+              docker-compose up -d
+              exit 1
+            fi
+          "
+          
+          echo "deployment_url=https://$PRODUCTION_DOMAIN" >> $GITHUB_OUTPUT
+      
+      # Notify on successful production deployment
+      - name: Notify successful production deployment
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_COLOR: '#57D9A3'
+          SLACK_TITLE: 'Production Deployment Successful'
+          SLACK_MESSAGE: 'InfluencerHUB has been successfully deployed to production at ${{ steps.deploy.outputs.deployment_url }}'
+      
+      # Create deployment tag
+      - name: Create deployment tag
+        if: success()
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          TAG_NAME="deploy-$(date +'%Y%m%d-%H%M%S')"
+          git tag $TAG_NAME
+          git push origin $TAG_NAME
+
+  # Job that runs on any failure
+  notify-failure:
+    name: Notify on Failure
+    runs-on: ubuntu-latest
+    needs: [lint, build-test, integration-tests, e2e-tests, docker-build, deploy-staging, security-gate, deploy-production]
+    if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+    timeout-minutes: 5 # Notification should be quick
+    # Minimal permissions
+    permissions:
+      contents: read
+    steps:
+      - name: Notify pipeline failure
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_COLOR: '#FF0000'
+          SLACK_TITLE: 'Pipeline Failure'
+          SLACK_MESSAGE: 'The CI/CD pipeline for InfluencerHUB has failed. Please check the GitHub Actions logs for details.'

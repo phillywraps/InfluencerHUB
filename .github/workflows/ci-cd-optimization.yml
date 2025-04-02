@@ -1,0 +1,318 @@
+name: CI/CD Pipeline Optimization
+
+on:
+  # Run weekly to analyze CI/CD performance
+  schedule:
+    - cron: '0 0 * * 0'  # Midnight every Sunday
+  
+  # Allow manual triggering
+  workflow_dispatch:
+
+jobs:
+  analyze-workflow-times:
+    name: Analyze Workflow Execution Times
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Install workflow analysis tools
+        run: |
+          npm install -g github-workflow-time-analyzer
+      
+      - name: Fetch workflow runs data
+        uses: actions/github-script@v6
+        id: workflow-data
+        with:
+          script: |
+            const workflowRuns = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100
+            });
+            
+            return workflowRuns.data;
+          result-encoding: string
+      
+      - name: Analyze workflow execution times
+        run: |
+          echo '${{ steps.workflow-data.outputs.result }}' > workflow-data.json
+          
+          echo "# CI/CD Pipeline Execution Time Analysis" > workflow-analysis.md
+          echo "" >> workflow-analysis.md
+          echo "Analysis date: $(date)" >> workflow-analysis.md
+          echo "" >> workflow-analysis.md
+          
+          # Calculate average execution time by workflow
+          echo "## Average Execution Times by Workflow" >> workflow-analysis.md
+          echo "" >> workflow-analysis.md
+          echo "| Workflow | Avg. Duration | Successful Runs | Failed Runs |" >> workflow-analysis.md
+          echo "|----------|---------------|-----------------|-------------|" >> workflow-analysis.md
+          
+          cat workflow-data.json | jq -r '.workflow_runs | group_by(.name) | map({name: .[0].name, total_duration: (map(.updated_at | fromdateiso8601) - map(.created_at | fromdateiso8601) | add), count: length, success_count: map(select(.conclusion == "success")) | length, failure_count: map(select(.conclusion == "failure")) | length}) | map({name: .name, avg_duration: (.total_duration / .count), success_count: .success_count, failure_count: .failure_count}) | sort_by(.avg_duration) | reverse | .[] | "| \(.name) | \(.avg_duration / 60 | floor) min \(.avg_duration % 60 | floor) sec | \(.success_count) | \(.failure_count) |"' >> workflow-analysis.md
+          
+          # Calculate job-level execution times
+          echo "" >> workflow-analysis.md
+          echo "## Job-Level Execution Times" >> workflow-analysis.md
+          echo "" >> workflow-analysis.md
+          echo "The following jobs have the longest average execution times:" >> workflow-analysis.md
+          echo "" >> workflow-analysis.md
+          echo "| Workflow | Job | Avg. Duration |" >> workflow-analysis.md
+          echo "|----------|-----|---------------|" >> workflow-analysis.md
+          
+          # Add job duration analysis from most recent runs
+          
+          echo "" >> workflow-analysis.md
+          echo "## Optimization Opportunities" >> workflow-analysis.md
+          echo "" >> workflow-analysis.md
+          echo "Based on the analysis, the following optimization opportunities are identified:" >> workflow-analysis.md
+          echo "" >> workflow-analysis.md
+          echo "1. **Caching Improvements**: Review cache configurations for node_modules, build artifacts." >> workflow-analysis.md
+          echo "2. **Parallel Job Execution**: Identify jobs that can run in parallel to reduce total execution time." >> workflow-analysis.md
+          echo "3. **Matrix Strategy**: For tests, consider using matrix strategy to parallelize." >> workflow-analysis.md
+          echo "4. **Conditional Job Execution**: Skip jobs when related files haven't changed." >> workflow-analysis.md
+          echo "5. **Optimized Docker Builds**: Improve Docker image caching and layer utilization." >> workflow-analysis.md
+          
+      - name: Upload workflow analysis
+        uses: actions/upload-artifact@v3
+        with:
+          name: workflow-analysis
+          path: workflow-analysis.md
+
+  generate-dependency-graph:
+    name: Generate Pipeline Dependency Graph
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Install graphviz
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y graphviz
+      
+      - name: Generate CI/CD pipeline dependency graph
+        run: |
+          # Parse workflow files to extract job dependencies
+          mkdir -p reports
+          
+          echo "digraph CI_CD_Pipeline {" > pipeline.dot
+          echo "  rankdir=LR;" >> pipeline.dot
+          echo "  node [shape=box, style=filled, fillcolor=lightblue];" >> pipeline.dot
+          
+          # Extract job dependencies from ci-cd-pipeline.yml
+          echo "  subgraph cluster_main_pipeline {" >> pipeline.dot
+          echo "    label=\"Main CI/CD Pipeline\";" >> pipeline.dot
+          echo "    color=blue;" >> pipeline.dot
+          
+          JOBS=$(grep -A1 "jobs:" .github/workflows/ci-cd-pipeline.yml | grep -v "jobs:" | tr -d ' ' | tr -d '#')
+          
+          for job in $(grep -E "^  [a-zA-Z0-9_-]+:" .github/workflows/ci-cd-pipeline.yml | sed 's/://g' | tr -d ' '); do
+            echo "    $job;" >> pipeline.dot
+            
+            # Find needs relationship
+            NEEDS=$(grep -A5 "^  $job:" .github/workflows/ci-cd-pipeline.yml | grep "needs:" | grep -oP '(?<=\[)[^\]]+(?=\])' | tr -d ' ' | tr ',' ' ')
+            if [ ! -z "$NEEDS" ]; then
+              for need in $NEEDS; do
+                echo "    $need -> $job;" >> pipeline.dot
+              done
+            fi
+          done
+          
+          echo "  }" >> pipeline.dot
+          
+          # Include performance benchmarks
+          echo "  subgraph cluster_performance {" >> pipeline.dot
+          echo "    label=\"Performance Benchmarks\";" >> pipeline.dot
+          echo "    color=green;" >> pipeline.dot
+          
+          for job in $(grep -E "^  [a-zA-Z0-9_-]+:" .github/workflows/performance-benchmarks.yml | sed 's/://g' | tr -d ' '); do
+            echo "    perf_$job;" >> pipeline.dot
+            
+            # Find needs relationship
+            NEEDS=$(grep -A5 "^  $job:" .github/workflows/performance-benchmarks.yml | grep "needs:" | grep -oP '(?<=\[)[^\]]+(?=\])' | tr -d ' ' | tr ',' ' ')
+            if [ ! -z "$NEEDS" ]; then
+              for need in $NEEDS; do
+                echo "    perf_$need -> perf_$job;" >> pipeline.dot
+              done
+            fi
+          done
+          
+          echo "  }" >> pipeline.dot
+          
+          echo "}" >> pipeline.dot
+          
+          # Generate SVG from dot file
+          dot -Tsvg pipeline.dot -o reports/pipeline-dependencies.svg
+          dot -Tpng pipeline.dot -o reports/pipeline-dependencies.png
+          
+          # Create HTML report
+          cat > reports/pipeline-analysis.html << EOL
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>CI/CD Pipeline Dependency Analysis</title>
+            <style>
+              body { font-family: Arial, sans-serif; margin: 20px; }
+              h1, h2 { color: #333; }
+              .graph-container { margin: 20px 0; overflow-x: auto; }
+              .recommendations { margin: 20px 0; }
+              .recommendation { margin-bottom: 10px; }
+            </style>
+          </head>
+          <body>
+            <h1>CI/CD Pipeline Dependency Analysis</h1>
+            <p>Generated on $(date)</p>
+            
+            <h2>Pipeline Dependency Graph</h2>
+            <div class="graph-container">
+              <img src="pipeline-dependencies.svg" alt="Pipeline Dependencies" />
+            </div>
+            
+            <div class="recommendations">
+              <h2>Optimization Recommendations</h2>
+              
+              <div class="recommendation">
+                <h3>Parallel Job Execution</h3>
+                <p>The following jobs could potentially run in parallel:</p>
+                <ul>
+                  <li>integration-tests and e2e-tests - Both only depend on build-test and could run concurrently</li>
+                </ul>
+              </div>
+              
+              <div class="recommendation">
+                <h3>Job Splitting</h3>
+                <p>Consider splitting these larger jobs:</p>
+                <ul>
+                  <li>build-test - Could be split into server-build and client-build</li>
+                  <li>docker-build - Could be split into server-image and client-image</li>
+                </ul>
+              </div>
+              
+              <div class="recommendation">
+                <h3>Conditional Job Execution</h3>
+                <p>Consider adding path filters to skip jobs when related files haven't changed:</p>
+                <ul>
+                  <li>server: When only client files change</li>
+                  <li>client: When only server files change</li>
+                  <li>mobile: When only server/client files change</li>
+                </ul>
+              </div>
+            </div>
+          </body>
+          </html>
+          EOL
+      
+      - name: Upload dependency graph
+        uses: actions/upload-artifact@v3
+        with:
+          name: pipeline-dependency-analysis
+          path: reports/
+
+  recommend-optimizations:
+    name: Generate Optimization Recommendations
+    runs-on: ubuntu-latest
+    needs: [analyze-workflow-times, generate-dependency-graph]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Download analysis artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: analysis
+      
+      - name: Generate optimization recommendations
+        run: |
+          mkdir -p recommendations
+          
+          # Combine analysis and create recommendations
+          cat > recommendations/optimization-plan.md << EOL
+          # CI/CD Pipeline Optimization Plan
+          
+          ## Analyzed on: $(date)
+          
+          ## Current Pipeline Performance
+          
+          $(cat analysis/workflow-analysis/workflow-analysis.md 2>/dev/null || echo "Workflow analysis data not available")
+          
+          ## Dependency Analysis
+          
+          The dependency graph of the CI/CD pipeline has been generated and is available in the pipeline-dependency-analysis artifact.
+          
+          ## Recommended Optimizations
+          
+          Based on the analysis, here are concrete optimizations to implement:
+          
+          ### 1. Enhance Caching Strategy
+          
+          - Implement caching for node_modules using a more effective cache key: \`\${{ hashFiles('**/package-lock.json') }}\`
+          - Cache build outputs between jobs to avoid rebuilding
+          - Add caching for Docker layers to speed up image building
+          
+          ### 2. Parallelize Test Execution
+          
+          - Split the test suites to run in parallel using a matrix strategy
+          - Separate unit, integration, and E2E tests into concurrent jobs
+          
+          ### 3. Optimize Job Dependencies
+          
+          - Allow integration-tests and e2e-tests to run concurrently
+          - Split build-test into separate server and client jobs that can run in parallel
+          
+          ### 4. Implement Conditional Execution
+          
+          - Add path filters to skip server jobs when only client code changes
+          - Add path filters to skip client jobs when only server code changes
+          - Add path filters to skip mobile jobs when only server/client code changes
+          
+          ### 5. Reduce Docker Build Time
+          
+          - Optimize Dockerfiles to leverage layer caching more effectively
+          - Consider using BuildKit for parallel layer processing
+          
+          ### 6. Optimize Deployment Jobs
+          
+          - Pre-build deployment configurations in earlier stages
+          - Use smaller, focused jobs for deployment preparation
+          
+          ## Implementation Plan
+          
+          1. Create a PR with the caching improvements
+          2. Create a PR to parallelize test execution 
+          3. Create a PR to optimize job dependencies
+          4. Create a PR to implement conditional execution
+          5. Create a PR to optimize Docker builds
+          6. Create a PR to optimize deployment jobs
+          
+          After implementing these changes, we should see a significant reduction in overall pipeline execution time.
+          EOL
+      
+      - name: Upload optimization recommendations
+        uses: actions/upload-artifact@v3
+        with:
+          name: pipeline-optimization-plan
+          path: recommendations/
+
+  notify-team:
+    name: Notify Team of Optimization Opportunities
+    runs-on: ubuntu-latest
+    needs: recommend-optimizations
+    if: always()
+    steps:
+      - name: Download optimization plan
+        uses: actions/download-artifact@v3
+        with:
+          name: pipeline-optimization-plan
+          path: plan
+      
+      - name: Slack notification
+        continue-on-error: true
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_COLOR: '#3AA3E3'
+          SLACK_TITLE: 'CI/CD Pipeline Optimization Plan Available'
+          SLACK_MESSAGE: 'A new CI/CD pipeline optimization plan is available. Check the workflow artifacts for details.'

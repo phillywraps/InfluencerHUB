@@ -1,0 +1,248 @@
+name: GCP Deployment
+
+on:
+  push:
+    branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+
+# Prevent concurrent deployments to the same environment
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.inputs.environment || (github.ref == 'refs/heads/main' && 'prod' || 'dev') }}
+  cancel-in-progress: true
+
+env:
+  PROJECT_ID: influencerhub1
+  REGION: us-central1
+
+jobs:
+  deploy-infrastructure:
+    name: Deploy Infrastructure
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Set environment
+        id: env
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "ENVIRONMENT=${{ github.event.inputs.environment }}" >> $GITHUB_ENV
+            echo "environment=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.ref }}" == "refs/heads/main" ]; then
+            echo "ENVIRONMENT=prod" >> $GITHUB_ENV
+            echo "environment=prod" >> $GITHUB_OUTPUT
+          else
+            echo "ENVIRONMENT=dev" >> $GITHUB_ENV
+            echo "environment=dev" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v1
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
+        
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.7
+      
+      - name: Enable APIs
+        run: |
+          gcloud services enable cloudbuild.googleapis.com run.googleapis.com containerregistry.googleapis.com sqladmin.googleapis.com storage-api.googleapis.com
+      
+      - name: Terraform Init
+        working-directory: infrastructure/terraform/gcp
+        run: terraform init
+      
+      - name: Terraform Validate
+        working-directory: infrastructure/terraform/gcp
+        run: terraform validate
+      
+      - name: Terraform Plan
+        working-directory: infrastructure/terraform/gcp
+        run: |
+          terraform plan \
+            -var-file="environments/${{ env.ENVIRONMENT }}.tfvars" \
+            -var="environment=${{ env.ENVIRONMENT }}" \
+            -out=tfplan
+      
+      - name: Terraform Apply
+        working-directory: infrastructure/terraform/gcp
+        run: terraform apply -auto-approve tfplan
+        
+      - name: Extract Terraform Outputs
+        id: terraform
+        working-directory: infrastructure/terraform/gcp
+        run: |
+          echo "api_service_url=$(terraform output -raw api_service_url)" >> $GITHUB_OUTPUT
+          echo "client_storage_url=$(terraform output -raw client_storage_url)" >> $GITHUB_OUTPUT
+          echo "client_bucket=$(terraform output -raw client_storage_bucket)" >> $GITHUB_OUTPUT
+  
+  deploy-server:
+    name: Deploy Server
+    needs: deploy-infrastructure
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set environment
+        id: env
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "ENVIRONMENT=${{ github.event.inputs.environment }}" >> $GITHUB_ENV
+          elif [ "${{ github.ref }}" == "refs/heads/main" ]; then
+            echo "ENVIRONMENT=prod" >> $GITHUB_ENV
+          else
+            echo "ENVIRONMENT=dev" >> $GITHUB_ENV
+          fi
+      
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v1
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
+      
+      - name: Build and push server image
+        working-directory: server
+        run: |
+          gcloud builds submit --tag "gcr.io/${{ env.PROJECT_ID }}/influencerhub-server-${{ env.ENVIRONMENT }}"
+      
+      - name: Deploy to Cloud Run
+        working-directory: server
+        run: |
+          gcloud run deploy "influencerhub-api-${{ env.ENVIRONMENT }}" \
+            --image "gcr.io/${{ env.PROJECT_ID }}/influencerhub-server-${{ env.ENVIRONMENT }}" \
+            --platform managed \
+            --region ${{ env.REGION }} \
+            --allow-unauthenticated
+  
+  deploy-client:
+    name: Deploy Client
+    needs: [deploy-infrastructure, deploy-server]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set environment
+        id: env
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "ENVIRONMENT=${{ github.event.inputs.environment }}" >> $GITHUB_ENV
+          elif [ "${{ github.ref }}" == "refs/heads/main" ]; then
+            echo "ENVIRONMENT=prod" >> $GITHUB_ENV
+          else
+            echo "ENVIRONMENT=dev" >> $GITHUB_ENV
+          fi
+      
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v1
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+          cache: 'npm'
+          cache-dependency-path: client/package-lock.json
+      
+      - name: Install client dependencies
+        working-directory: client
+        run: npm ci
+      
+      - name: Create environment file
+        working-directory: client
+        run: |
+          API_URL=$(cd ../infrastructure/terraform/gcp && terraform output -raw api_service_url)
+          echo "REACT_APP_API_URL=$API_URL" > .env.${{ env.ENVIRONMENT }}
+          echo "REACT_APP_SOCKET_URL=$API_URL" >> .env.${{ env.ENVIRONMENT }}
+      
+      - name: Build client
+        working-directory: client
+        run: npm run build
+      
+      - name: Deploy to Cloud Storage
+        working-directory: client
+        run: |
+          CLIENT_BUCKET=$(cd ../infrastructure/terraform/gcp && terraform output -raw client_storage_bucket)
+          gsutil -m cp -r build/* "gs://$CLIENT_BUCKET/"
+          gsutil web set -m index.html -e 404.html "gs://$CLIENT_BUCKET/"
+      
+  notification:
+    name: Send Deployment Notification
+    needs: [deploy-infrastructure, deploy-server, deploy-client]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Set environment name
+        id: env
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "ENVIRONMENT=${{ github.event.inputs.environment }}" >> $GITHUB_ENV
+          elif [ "${{ github.ref }}" == "refs/heads/main" ]; then
+            echo "ENVIRONMENT=prod" >> $GITHUB_ENV
+          else
+            echo "ENVIRONMENT=dev" >> $GITHUB_ENV
+          fi
+      
+      - name: Check deployment status
+        id: status
+        run: |
+          if [ "${{ needs.deploy-infrastructure.result }}" == "success" ] && [ "${{ needs.deploy-server.result }}" == "success" ] && [ "${{ needs.deploy-client.result }}" == "success" ]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Send success notification
+        if: steps.status.outputs.status == 'success'
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_COLOR: '#57D9A3'
+          SLACK_TITLE: 'InfluencerHUB Deployment Successful'
+          SLACK_MESSAGE: 'InfluencerHUB has been successfully deployed to ${{ env.ENVIRONMENT }} environment.'
+      
+      - name: Send failure notification
+        if: steps.status.outputs.status == 'failure'
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_COLOR: '#FF0000'
+          SLACK_TITLE: 'InfluencerHUB Deployment Failed'
+          SLACK_MESSAGE: 'InfluencerHUB deployment to ${{ env.ENVIRONMENT }} environment has failed. Please check the GitHub Actions logs.'

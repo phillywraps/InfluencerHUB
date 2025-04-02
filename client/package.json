@@ -1,0 +1,85 @@
+{
+  "name": "influencer-platform-client",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@emotion/react": "^11.10.6",
+    "@emotion/styled": "^11.10.6",
+    "@mui/icons-material": "^5.11.11",
+    "@mui/material": "^5.11.14",
+    "@reduxjs/toolkit": "^1.9.3",
+    "@stripe/react-stripe-js": "^3.5.1",
+    "@stripe/stripe-js": "^6.1.0",
+    "axios": "^1.3.4",
+    "date-fns": "^2.29.3",
+    "formik": "^2.2.9",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-paypal-button-v2": "^2.6.3",
+    "react-redux": "^8.0.5",
+    "react-router-dom": "^6.9.0",
+    "react-scripts": "5.0.1",
+    "recharts": "^2.15.1",
+    "socket.io-client": "^4.6.1",
+    "yup": "^1.0.2"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^5.16.5",
+    "@testing-library/react": "^14.0.0",
+    "@testing-library/user-event": "^14.4.3",
+    "axe-core": "^4.7.0",
+    "eslint": "^8.36.0",
+    "eslint-config-prettier": "^8.8.0",
+    "eslint-plugin-import": "^2.27.5",
+    "eslint-plugin-jsx-a11y": "^6.7.1",
+    "eslint-plugin-prettier": "^4.2.1",
+    "eslint-plugin-react": "^7.32.2", 
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "husky": "^8.0.3",
+    "jest-axe": "^8.0.0",
+    "lint-staged": "^13.2.0",
+    "prettier": "^2.8.7"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "test:a11y": "jest --config=jest.accessibility.config.js --testMatch=\"**/__tests__/**/*a11y.test.js\"",
+    "test:focus-trap": "jest --config=jest.accessibility.config.js --testMatch=\"**/__tests__/accessibility/utils/focusTrapUtils.test.js\"",
+    "test:accessibility": "node src/__tests__/accessibility/run-accessibility-tests.js",
+    "test:skip-navigation": "jest --config=jest.accessibility.config.js --testMatch=\"**/__tests__/accessibility/components/SkipNavigation.a11y.test.js\"",
+    "eject": "react-scripts eject",
+    "lint": "eslint --ext .js,.jsx src/",
+    "lint:fix": "eslint --ext .js,.jsx src/ --fix",
+    "format": "prettier --write 'src/**/*.{js,jsx,json,css,md}'",
+    "prepare": "cd .. && husky install client/.husky"
+  },
+  "lint-staged": {
+    "src/**/*.{js,jsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "src/**/*.{json,css,md}": [
+      "prettier --write"
+    ]
+  },
+  "eslintConfig": {
+    "extends": [
+      "react-app",
+      "react-app/jest"
+    ]
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  },
+  "proxy": "http://localhost:5000"
+}

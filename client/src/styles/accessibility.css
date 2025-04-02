@@ -1,0 +1,115 @@
+/**
+ * Global Accessibility Styles
+ *
+ * This stylesheet provides global accessibility styles that are applied
+ * based on user preferences set in the AccessibilitySettings component.
+ */
+
+/* High Contrast Mode
+   Applied when body has .high-contrast-mode class */
+body.high-contrast-mode {
+  /* Increase text contrast for better readability */
+  --text-primary: #000000;
+  --text-secondary: #000000;
+  --background-color: #ffffff;
+  --surface-color: #ffffff;
+  --border-color: #000000;
+  
+  /* Ensure all text has sufficient contrast */
+  color: #000000 !important;
+  
+  /* Add borders to interactive elements for better visibility */
+  button, a, input, select, textarea, [role="button"], [tabindex]:not([tabindex="-1"]) {
+    border: 2px solid #000000 !important;
+    color: #000000 !important;
+    background-color: #ffffff !important;
+  }
+  
+  /* Focused elements have a thicker border */
+  *:focus-visible {
+    outline: 3px solid #000000 !important;
+    outline-offset: 3px !important;
+  }
+  
+  /* Ensure link text is always underlined for better identification */
+  a, [role="link"] {
+    text-decoration: underline !important;
+  }
+  
+  /* Increase icon contrast */
+  svg, i, .material-icons {
+    color: #000000 !important;
+  }
+  
+  /* Ensure form elements have clear outlines */
+  input, select, textarea {
+    border: 2px solid #000000 !important;
+    color: #000000 !important;
+    background-color: #ffffff !important;
+  }
+  
+  /* Add visible :hover state for interactive elements */
+  button:hover, a:hover, [role="button"]:hover, [tabindex]:not([tabindex="-1"]):hover {
+    background-color: #f0f0f0 !important;
+  }
+}
+
+/* Reduced Motion
+   Applied when body has .reduce-motion class */
+body.reduce-motion * {
+  /* Disable all transitions for users who prefer reduced motion */
+  transition: none !important;
+  animation: none !important;
+  scroll-behavior: auto !important;
+}
+
+/* Keyboard Focus Mode
+   Applied when body has .keyboard-mode class */
+body.keyboard-mode *:focus {
+  /* Enhanced focus styles for keyboard users */
+  outline: 3px solid var(--primary-color, #3f51b5) !important;
+  outline-offset: 3px !important;
+}
+
+/* Font Scale
+   Applied through CSS variables in :root */
+body {
+  font-size: calc(1rem * var(--font-scale, 1));
+}
+
+/* Ensure headings scale proportionally with font-scale */
+h1 { font-size: calc(2.5rem * var(--font-scale, 1)); }
+h2 { font-size: calc(2rem * var(--font-scale, 1)); }
+h3 { font-size: calc(1.75rem * var(--font-scale, 1)); }
+h4 { font-size: calc(1.5rem * var(--font-scale, 1)); }
+h5 { font-size: calc(1.25rem * var(--font-scale, 1)); }
+h6 { font-size: calc(1rem * var(--font-scale, 1)); }
+
+/* Increase form element sizes for better touch targets at larger font sizes */
+button, input, select, textarea, [role="button"] {
+  padding: calc(0.5rem * var(--font-scale, 1)) calc(0.75rem * var(--font-scale, 1));
+}
+
+/* Skip link - ensure it's on top of everything */
+.skip-link:focus {
+  z-index: 9999 !important;
+}
+
+/* Screen reader only class - visually hidden but accessible to screen readers */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* Ensure touch targets are large enough for mobile accessibility */
+button, input[type="button"], input[type="submit"], input[type="reset"], a.btn, [role="button"] {
+  min-height: 44px;
+  min-width: 44px;
+}
