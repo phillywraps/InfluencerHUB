@@ -6,8 +6,8 @@ services:
     runtime: docker
     repo: https://github.com/phillywraps/InfluencerHUB
     rootDir: .
-    dockerfilePath: render.Dockerfile
-    buildCommand: docker build -f render.Dockerfile -t influencerhub-api .
+    dockerfilePath: ./Dockerfile
+    buildCommand: docker build -t influencerhub-api .
     region: ohio
     plan: standard
     branch: main

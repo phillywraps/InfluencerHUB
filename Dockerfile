@@ -1,4 +1,4 @@
-# This is a simplified, reliable Dockerfile for Render.com deployment
+# Simplified Dockerfile for Render.com deployment
 FROM node:16-alpine
 
 # Set working directory
@@ -7,18 +7,30 @@ WORKDIR /app
 # Install build dependencies
 RUN apk --no-cache add python3 make g++
 
-# Copy the entire application to ensure all files are available
+# Copy package files for both root and server
+COPY package*.json ./
+COPY server/package*.json ./server/
+
+# Install dependencies at both levels
+RUN npm install --omit=dev
+# Install server dependencies, ensuring winston-daily-rotate-file is included
+WORKDIR /app/server
+RUN npm install --omit=dev winston-daily-rotate-file
+WORKDIR /app
+
+# Copy the entire application
 COPY . .
 
-# Install server dependencies
-WORKDIR /app/server
-RUN npm install
+# Create logs directory for the logging system
+RUN mkdir -p /app/server/logs/general /app/server/logs/error /app/server/logs/http
 
-# Set environment variables for server
+# Environment variables
 ENV NODE_ENV=production
 ENV PORT=5000
-EXPOSE 5000
 ENV RENDER_HEALTHCHECK_PATH=/api/health
 
-# Command to run the server
-CMD ["node", "server.js"]
+# Expose the port
+EXPOSE 5000
+
+# Use a startup script that checks whether to run the full server or the simple test
+CMD ["node", "server/server.js"]
