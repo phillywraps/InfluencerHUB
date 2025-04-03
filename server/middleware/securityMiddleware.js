@@ -86,7 +86,7 @@ const corsOptions = () => {
   
   // In production, only allow specified origins
   return {
-    origin: process.env.CORS_ORIGIN.split(','),
+    origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : ['https://influencerhub.onrender.com'],
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true,

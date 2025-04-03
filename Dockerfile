@@ -21,8 +21,10 @@ WORKDIR /app
 # Copy the entire application
 COPY . .
 
-# Create logs directory for the logging system
-RUN mkdir -p /app/server/logs/general /app/server/logs/error /app/server/logs/http
+# Create logs directory for the logging system with proper permissions
+USER root
+RUN mkdir -p /app/server/logs/general /app/server/logs/error /app/server/logs/http && \
+    chmod -R 777 /app/server/logs
 
 # Environment variables
 ENV NODE_ENV=production
@@ -32,5 +34,8 @@ ENV RENDER_HEALTHCHECK_PATH=/api/health
 # Expose the port
 EXPOSE 5000
 
-# Use a startup script that checks whether to run the full server or the simple test
-CMD ["node", "server/server.js"]
+# Make the startup script executable
+RUN chmod +x /app/server/startup.sh
+
+# Use the startup script to ensure log directories exist and have proper permissions
+CMD ["/app/server/startup.sh"]
